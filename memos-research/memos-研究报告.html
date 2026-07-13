@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemOS 技术调研与选型分析</title>
+<style>
+:root{
+  --fg:#1f2328; --fg-muted:#656d76; --bg:#ffffff; --bg-soft:#f6f8fa;
+  --border:#d0d7de; --accent:#0969da; --accent-soft:#ddf4ff;
+  --green:#1a7f37; --amber:#9a6700; --amber-soft:#fff8c5;
+  --red:#cf222e; --purple:#8250df;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--fg);background:var(--bg);line-height:1.75;font-size:16px}
+.wrap{max-width:900px;margin:0 auto;padding:56px 32px 96px}
+h1{font-size:29px;font-weight:700;padding-bottom:.35em;border-bottom:2px solid var(--border);margin-top:0;letter-spacing:-.01em}
+h2{font-size:22px;font-weight:600;padding-bottom:.3em;border-bottom:1px solid var(--border);margin-top:52px}
+h3{font-size:17.5px;font-weight:600;margin-top:30px}
+p,li{font-size:15.5px}
+code{background:var(--bg-soft);padding:.15em .4em;border-radius:6px;font-size:88%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+table{border-collapse:collapse;width:100%;margin:18px 0;font-size:14.5px;display:block;overflow-x:auto}
+th,td{border:1px solid var(--border);padding:9px 13px;text-align:left;vertical-align:top}
+th{background:var(--bg-soft);font-weight:600}
+tr:nth-child(even){background:var(--bg-soft)}
+blockquote{margin:18px 0;padding:2px 18px;color:var(--fg);border-left:4px solid var(--accent);background:var(--accent-soft)}
+hr{border:none;border-top:1px solid var(--border);margin:40px 0}
+.lead{font-size:16.5px;color:var(--fg-muted);margin:6px 0 28px}
+.note{border:1px solid var(--border);border-left:4px solid var(--amber);border-radius:6px;padding:12px 18px;margin:18px 0;background:var(--amber-soft)}
+.note p{margin:6px 0}.note p:first-child{margin-top:0}.note p:last-child{margin-bottom:0}
+.key{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:6px;padding:14px 18px;margin:20px 0;background:var(--accent-soft)}
+.key p{margin:6px 0}.key p:first-child{margin-top:0}.key p:last-child{margin-bottom:0}
+.toc{background:var(--bg-soft);border:1px solid var(--border);border-radius:8px;padding:14px 26px;margin:26px 0}
+.toc ol{margin:8px 0;padding-left:22px}
+.toc a{color:var(--accent);text-decoration:none}
+.toc a:hover{text-decoration:underline}
+.ours{color:var(--green);font-weight:600}
+.theirs{color:var(--purple);font-weight:600}
+.dep{color:var(--fg-muted)}
+.refs{font-size:13px;color:var(--fg-muted);word-break:break-all;line-height:1.9}
+.byline{color:var(--fg-muted);font-size:14px;margin-top:-4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>MemOS 技术调研与选型分析</h1>
+<p class="byline">面向 LLM 记忆管理的开源方案 MemOS 调研，及其与我们现有 ark-agentic 记忆子系统的对比</p>
+
+<p class="lead">MemOS 是近期记忆（Memory）方向讨论度较高的一个开源项目，提出了把记忆当作"操作系统级资源"来统一管理的思路。我们对它的定位、架构、依赖和实测表现做了一轮调研，并结合我们自研的 ark-agentic 记忆子系统，梳理了两者在设计取向上的差异，以及哪些思路值得我们吸收、哪些实现方式并不适合我们当前的技术路线。本文汇总这次调研的结论。</p>
+
+<div class="toc">
+<strong>目录</strong>
+<ol>
+  <li><a href="#tldr">结论摘要</a></li>
+  <li><a href="#what">MemOS 是什么：定位与核心抽象</a></li>
+  <li><a href="#arch">架构、依赖与部署重量</a></li>
+  <li><a href="#bench">关于它的 benchmark 表现</a></li>
+  <li><a href="#ark">我们现有的 ark-agentic 记忆子系统</a></li>
+  <li><a href="#compare">逐维度对比</a></li>
+  <li><a href="#takeaway">结论与建议</a></li>
+  <li><a href="#refs">参考来源</a></li>
+</ol>
+</div>
+
+<h2 id="tldr">1 · 结论摘要</h2>
+<p>MemOS 的抽象层次和野心都很高，代表了记忆方向上一种比较系统化的思路，其概念框架值得我们学习。但需要看清楚一点：它和我们的 ark-agentic 记忆子系统并不在同一个定位层面上——</p>
+<table>
+<thead><tr><th>维度</th><th>MemOS</th><th>ark-agentic 记忆子系统</th></tr></thead>
+<tbody>
+<tr><td>本质定位</td><td>记忆的操作系统 / 基础设施平台</td><td>agent 框架内的一个轻量记忆子系统</td></tr>
+<tr><td>覆盖范围</td><td>统一明文、激活态（KV-cache）、参数三类记忆</td><td>专注明文记忆一类，做扎实</td></tr>
+<tr><td>召回方式</td><td>向量 + 全文混合检索（依赖 embedding）</td><td>整份记忆全量注入 prompt，不做检索</td></tr>
+<tr><td>基础设施</td><td>完整部署默认需向量库 + 图库</td><td>复用现有数据库，无额外组件</td></tr>
+<tr><td>适用场景</td><td>大规模跨会话记忆、有基建运维能力的团队</td><td>轻量、可控、易部署的 agent 应用</td></tr>
+</tbody>
+</table>
+<div class="key">
+<p><strong>我们的判断</strong>：MemOS 在记忆分层、记忆单元化、记忆生命周期管理这几个概念设计上很有参考价值，其中一部分理念我们其实已经在实践（详见第 7 节）。但它的重基础设施实现——向量库加图库的混合检索——在我们当前"纯文本、无向量基建、轻量部署"的技术路线下，直接引入的性价比不高。我们更倾向于<strong>吸收它的设计思想来演进自己的方案，而非照搬它的架构</strong>。</p>
+</div>
+
+<h2 id="what">2 · MemOS 是什么：定位与核心抽象</h2>
+
+<h3>2.1 定位</h3>
+<p>MemOS（Memory Operating System）由 MemTensor 公司联合上海交通大学等团队提出，是一个面向大模型的"记忆操作系统"。它的核心命题是把记忆提升为一种可管理的一等系统资源——类比操作系统对 CPU、内存、磁盘的管理，对大模型的记忆做系统化的调度与治理。</p>
+<ul>
+<li>开源，Apache 2.0 许可，GitHub 仓库 <code>MemTensor/MemOS</code>，约 10.2k star，社区活跃。</li>
+<li>有两篇 arXiv 论文（编号 2505.22101 与 2507.03724，2025 年 5–7 月），学术表述较完整。</li>
+<li>对外提供统一的记忆操作接口：<code>add / retrieve / edit / delete</code>，记忆以可检视、可编辑的图结构组织。</li>
+</ul>
+
+<h3>2.2 核心抽象：MemCube</h3>
+<p>MemOS 的核心抽象是 <strong>MemCube</strong>，一个标准化的记忆基本单元。它封装记忆内容本身，同时携带来源（provenance）、版本（versioning）等元数据，并支持多个 MemCube 之间的组合、迁移与融合。这个设计让记忆从"一堆散落的文本"变成"有身份、有版本、可治理的对象"，是 MemOS 系统化思路的落点。</p>
+
+<h3>2.3 三类记忆分层</h3>
+<p>MemOS 最有辨识度的主张，是把记忆分成三类并统一管理：</p>
+<table>
+<thead><tr><th>记忆类型</th><th>是什么</th><th>类比</th></tr></thead>
+<tbody>
+<tr><td>明文记忆（plaintext）</td><td>外部可编辑、可检索的明文知识，类似 RAG</td><td>硬盘上的文档 / 知识库</td></tr>
+<tr><td>激活记忆（activation）</td><td>以 KV-cache 为核心的推理中间状态，介于原始数据与模型参数之间</td><td>内存里的运行态</td></tr>
+<tr><td>参数记忆（parameter）</td><td>编码在模型固定权重中的隐式知识</td><td>固化进硬件的知识</td></tr>
+</tbody>
+</table>
+<div class="key">
+<p>这个分层的意义在于：目前多数记忆方案（如 mem0、Zep）基本只处理<strong>明文记忆</strong>一类。MemOS 的独特之处是把<strong>激活记忆（KV-cache）和参数记忆（权重）</strong>也纳入同一套抽象——在概念上是一张更完整的"记忆版图"。我们的 ark-agentic 目前同样只做明文一类，与 mem0 处在同一层。是否有必要扩展到激活态和参数级记忆，是一个需要单独评估的战略问题（见第 7 节）。</p>
+</div>
+
+<h2 id="arch">3 · 架构、依赖与部署重量</h2>
+
+<h3>3.1 完整部署默认依赖向量库 + 图库</h3>
+<p>这是对我们最关键的一条工程事实。MemOS 的完整自托管部署，默认依赖两个外部服务：</p>
+<ul>
+<li><strong>Qdrant</strong>（向量数据库）——承担向量检索</li>
+<li><strong>Neo4j</strong>（图数据库）——承担图结构记忆</li>
+</ul>
+<p>官方文档明确要求先在 Docker 中启动 Neo4j 和 Qdrant，且所有部署方式都以这两个服务运行为前提。也就是说，开箱即用的完整部署，需要额外拉起并运维一个向量库和一个图库。</p>
+<div class="note">
+<p>需要客观补充一点：严格来说，Qdrant 只在使用 Neo4j 社区版（无原生向量索引）时才成为硬性必需——MemOS 文档中后端通过抽象层是可替换的。所以准确的说法是：<strong>向量库 + 图库是 MemOS 的默认与参考后端，并非架构上不可替换的硬绑定</strong>。但"完整部署要额外运维两个重服务"这个工程现实是成立的。</p>
+</div>
+
+<h3>3.2 检索机制：向量 + 全文混合检索</h3>
+<p>MemOS 采用向量检索加全文检索（FTS5）的混合检索。官方描述中包含 hybrid-retrieval 标签，并说明由 Qdrant 提供的向量检索用于找到"概念上相关"的记忆。虽然 embedding 模型和向量库可以经配置更换，全文检索也提供了一条独立的关键词检索路径，但<strong>没有一种完全不依赖向量的检索模式</strong>——向量/embedding 是其检索设计的核心组成，绕不开。</p>
+
+<h3>3.3 也有轻量的本地部署选项</h3>
+<p>客观起见需要说明：MemOS 并非只有重部署一条路。它另外提供一个基于 SQLite、100% 本地运行的插件（Node.js，同样是全文加向量的混合检索），作为轻量替代。不过即便是这个"轻量"版本，仍然带有 embedding 加向量检索加独立运行时，比我们现有方案（一张数据库表 / 一个 markdown 文件、无检索基建）仍重一个量级。</p>
+
+<h3>3.4 依赖重量对照</h3>
+<table>
+<thead><tr><th></th><th>MemOS 完整部署</th><th>MemOS 本地插件</th><th>ark-agentic 记忆子系统</th></tr></thead>
+<tbody>
+<tr><td>向量库</td><td>Qdrant（默认）</td><td>内置（SQLite）</td><td class="ours">无</td></tr>
+<tr><td>图库</td><td>Neo4j（默认）</td><td>无</td><td class="ours">无</td></tr>
+<tr><td>embedding 模型</td><td>需要</td><td>需要</td><td class="ours">不需要</td></tr>
+<tr><td>运行时</td><td>Python + Docker 编排</td><td>Node.js</td><td>已在现有 Python 进程内</td></tr>
+<tr><td>额外部署组件</td><td>≥ 2 个重服务</td><td>1 个插件进程</td><td class="ours">0（复用现有数据库）</td></tr>
+</tbody>
+</table>
+
+<h2 id="bench">4 · 关于它的 benchmark 表现</h2>
+<p>MemOS 在 LOCOMO（长对话记忆问答，以大模型作为评判）这个 benchmark 上宣称全面领先。论文给出的总分大致如下：</p>
+<table>
+<thead><tr><th>方案</th><th>LOCOMO 总分（据 MemOS 论文）</th></tr></thead>
+<tbody>
+<tr><td>MemOS-1031</td><td>75.80</td></tr>
+<tr><td>MemOS-0630</td><td>73.31（四类任务均列第一）</td></tr>
+<tr><td>Memobase</td><td>72.01</td></tr>
+<tr><td>Mem0</td><td>64.57</td></tr>
+<tr><td>Zep / LangMem / OpenAI-Memory</td><td>更低</td></tr>
+</tbody>
+</table>
+<div class="note">
+<p><strong>这组数据需要谨慎看待，不宜直接当作"MemOS 明显更强"的结论。</strong>原因有四点：</p>
+</div>
+<ol>
+<li><strong>均为厂商自测</strong>：这些分数是 MemOS 在自家评测流程、自选的评判模型和评分口径下，统一跑出来的（包括给各家 baseline 打分）。</li>
+<li><strong>各家自测互相打架</strong>：Mem0 用自己的评测流程报告的分数（66.9~91.6）远高于 MemOS 给它打的 64.57；Memobase 自测 LOCOMO 报 75.8%（恰好等于 MemOS 给自己的分），而 MemOS 表中只给它 72.01。谁来打分，结果就偏向谁。</li>
+<li><strong>数据集本身有瑕疵</strong>：LOCOMO 的标准答案中约有 99 个存在错误或歧义，诚实的分数上限大约只有 93–94%。</li>
+<li><strong>简单方案也能达到相近水平</strong>：据报道，Letta 用纯文件系统加 grep（完全不用向量）也能达到约 74%，与 MemOS 处在同一档。这说明在这个 benchmark 上，重基础设施并未换来实质性的领先。</li>
+</ol>
+<div class="key">
+<p>最后一点对我们其实是有利的旁证：既然纯文件方案都能达到约 74%，说明记忆问答任务上的表现更多取决于抽取与组织的质量，而非是否引入了向量库。我们"纯文本 + 全量注入"的路线，在这类任务上并不天然吃亏。</p>
+</div>
+
+<h2 id="ark">5 · 我们现有的 ark-agentic 记忆子系统</h2>
+<p>为便于对比，先概括我们自己的实现：</p>
+<ul>
+<li><strong>存储</strong>：纯文本、按标题分节（heading-based）的 markdown，单用户一份整体存储，有 16KB 上限。</li>
+<li><strong>召回</strong>：整份记忆（截断到约 2000 token 预算内）直接注入系统提示词，<strong>不做检索</strong>——工具层明确不提供 search / get 接口。</li>
+<li><strong>抽取</strong>：每轮对话结束后台异步抽取，由大模型输出结构化的增删改操作，遵循一套过滤规则决定"记什么 / 不记什么"。</li>
+<li><strong>整理</strong>：周期性触发（24 小时或累计 3 个会话），由大模型合并近义标题、删除矛盾内容，并有乐观合并机制防止并发覆盖。</li>
+<li><strong>并发与多租户</strong>：乐观锁加跨节点租约保证多节点一致；按 agent 做行级数据隔离。</li>
+<li><strong>可观测</strong>：近期新增了 append-only 的操作日志，记录每次记忆变更的来源、动作与前后内容，用于变更归因和溯源。</li>
+<li><strong>依赖</strong>：无 embedding、无向量库、无图库，仅依赖数据库访问层和大模型调用。存储后端可插拔。</li>
+</ul>
+
+<h2 id="compare">6 · 逐维度对比</h2>
+<table>
+<thead><tr><th>维度</th><th>MemOS</th><th>ark-agentic</th><th>更契合我们的一方</th></tr></thead>
+<tbody>
+<tr><td>概念抽象</td><td>记忆单元化 + 三类记忆分层，操作系统级</td><td>标题分节 + 结构化操作，应用级</td><td class="theirs">MemOS（思路可借鉴）</td></tr>
+<tr><td>记忆覆盖范围</td><td>明文 + 激活态 + 参数</td><td>仅明文</td><td class="theirs">MemOS（更完整）</td></tr>
+<tr><td>召回方式</td><td>混合检索，按需取相关片段</td><td>全量注入</td><td class="dep">取决于记忆规模</td></tr>
+<tr><td>大规模记忆</td><td>检索式，天然支持海量</td><td>受容量上限约束</td><td class="theirs">MemOS</td></tr>
+<tr><td>小规模记忆</td><td>为几条偏好也需跑检索</td><td>全量注入，无检索开销</td><td class="ours">ark-agentic</td></tr>
+<tr><td>基础设施</td><td>默认需向量库 + 图库</td><td>复用现有数据库</td><td class="ours">ark-agentic</td></tr>
+<tr><td>部署与运维</td><td>多服务编排，运维成本高</td><td>进程内，无额外运维</td><td class="ours">ark-agentic</td></tr>
+<tr><td>可解释 / 可编辑</td><td>图结构可检视，带来源信息</td><td>markdown 人类可读可改，带操作日志</td><td class="dep">各有所长</td></tr>
+<tr><td>版本与溯源</td><td>记忆单元内建版本与来源</td><td>操作日志 + 消息级溯源</td><td class="dep">相当</td></tr>
+<tr><td>多租户隔离</td><td>记忆单元组合，支持隔离与受控共享</td><td>按 agent 行级隔离</td><td class="dep">相当</td></tr>
+<tr><td>并发一致性</td><td>文档未突出</td><td>乐观锁 + 跨节点租约，多节点打磨过</td><td class="ours">ark-agentic</td></tr>
+<tr><td>落地成本</td><td>引入意味着新增基建与学习曲线</td><td>已在生产运行</td><td class="ours">ark-agentic</td></tr>
+</tbody>
+</table>
+
+<h2 id="takeaway">7 · 结论与建议</h2>
+
+<h3>7.1 值得吸收的设计思路</h3>
+<p>抛开具体实现，MemOS 有几个概念设计确实值得我们借鉴，而且成本不高——其中一部分我们已经在做：</p>
+<table>
+<thead><tr><th>MemOS 的设计</th><th>对我们的启发</th></tr></thead>
+<tbody>
+<tr><td>记忆单元携带来源与版本元数据</td><td>我们的操作日志已经是这个思想的雏形（记录来源、触发消息、变更前后）。可进一步把"来源 / 版本"提升为记忆条目的一等属性。</td></tr>
+<tr><td>记忆生命周期的显式管理（增删改统一接口 + 演化）</td><td>我们已有结构化的增删改操作和周期整理机制，理念吻合。可借鉴其对"记忆随时间演化、融合"的显式建模。</td></tr>
+<tr><td>记忆分层（明文 / 激活态 / 参数）</td><td>作为审视自身路线的框架：让我们明确"当前有意只做明文记忆"是一个主动的技术选择，而非能力缺失。</td></tr>
+<tr><td>记忆单元可组合、隔离、共享</td><td>启发我们思考多 agent 下的记忆差异化——不同 agent 组合不同的记忆配置。</td></tr>
+</tbody>
+</table>
+
+<h3>7.2 不建议直接引入的部分</h3>
+<p>以下几点在我们当前的技术路线与团队规模下，直接落地的性价比不高：</p>
+<table>
+<thead><tr><th>MemOS 的实现</th><th>不建议直接引入的原因</th></tr></thead>
+<tbody>
+<tr><td>向量 + 图的混合检索</td><td>引入向量库和图库是较重的基建投入。只有当我们的记忆规模确实突破了全量注入的上限时才值得考虑，而目前远未到那个量级。</td></tr>
+<tr><td>激活记忆（KV-cache 记忆）</td><td>技术复杂度高、与推理引擎强耦合，投入产出比存疑，更偏向研究前沿而非当前工程刚需。</td></tr>
+<tr><td>参数记忆（权重记忆）</td><td>涉及模型微调与编辑，超出了记忆子系统的职责范畴。</td></tr>
+</tbody>
+</table>
+
+<h3>7.3 结论</h3>
+<blockquote>
+MemOS 的记忆分层与记忆单元化思想代表了这个方向上比较成熟的系统化思路，值得我们学习，其中记忆溯源、生命周期管理等理念我们已经在实践中吸收。它的向量加图混合检索适合海量记忆的检索场景；而我们当前面向的是轻量偏好类记忆，全量注入已经够用，且公开 benchmark 也表明重基础设施在记忆问答上并未带来实质优势。综合来看，我们的建议是：<strong>借鉴 MemOS 的概念框架来持续演进我们的记忆方案，同时不引入它的重基础设施，从而守住 ark-agentic 轻量、易部署这一核心优势。</strong>
+</blockquote>
+
+<h2 id="refs">8 · 参考来源</h2>
+<p class="refs">
+MemOS 论文：arxiv.org/abs/2505.22101 · arxiv.org/abs/2507.03724<br>
+开源仓库：github.com/MemTensor/MemOS<br>
+官方文档：memos-docs.openmem.net · 官方 PDF：statics.memtensor.com.cn/files/MemOS_0707.pdf<br>
+其它：huggingface.co/papers/2507.03724 · alphaxiv.org/overview/2505.22101v1<br>
+本文所引 benchmark 数据均出自 MemOS 官方论文与文档，属厂商自测，已在第 4 节说明其局限。
+</p>
+
+</div>
+</body>
+</html>

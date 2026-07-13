@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemOS 调研 · 内部备注（勿外传）</title>
+<style>
+:root{--fg:#1f2328;--fg-muted:#656d76;--bg:#fff;--bg-soft:#f6f8fa;--border:#d0d7de;--accent:#0969da;--accent-soft:#ddf4ff;--amber:#9a6700;--amber-soft:#fff8c5;--red:#cf222e;--red-soft:#ffebe9;--green:#1a7f37;--green-soft:#dafbe1}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--fg);background:var(--bg);line-height:1.7;font-size:16px}
+.wrap{max-width:860px;margin:0 auto;padding:48px 32px 96px}
+h1{font-size:26px;font-weight:700;padding-bottom:.3em;border-bottom:2px solid var(--border);margin-top:0}
+h2{font-size:20px;font-weight:600;margin-top:40px}
+h3{font-size:16px;font-weight:600;margin-top:24px}
+p,li{font-size:15px}
+code{background:var(--bg-soft);padding:.15em .4em;border-radius:6px;font-size:88%;font-family:ui-monospace,Menlo,monospace}
+blockquote{margin:16px 0;padding:2px 18px;border-left:4px solid var(--green);background:var(--green-soft)}
+ol li,ul li{margin:5px 0}
+.banner{border:2px solid var(--red);background:var(--red-soft);border-radius:8px;padding:12px 18px;margin-bottom:24px;color:var(--red);font-weight:600}
+.box{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:6px;padding:12px 18px;margin:16px 0;background:var(--accent-soft)}
+.box p{margin:6px 0}.box p:first-child{margin-top:0}.box p:last-child{margin-bottom:0}
+small{color:var(--fg-muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="banner">⚠ 内部备注 · 仅供你自己汇报参考 · 不要发给老板/同事（对外版是另一份 memos-研究报告.html）</div>
+
+<h1>MemOS 调研 · 内部备注</h1>
+<p>这份只记<strong>不方便写进对外报告</strong>的东西：不加修饰的工程判断，和汇报时的措辞建议。硬事实、数据、对比表都在对外版里，这里不重复。</p>
+
+<h2>1 · 为什么 MemOS 的架构"直接搬"不适配我们（工程真话）</h2>
+<ol>
+<li><strong>解决的问题根本不同</strong>。MemOS 解决的是"海量记忆的高效检索与统一管理"。我们当前的记忆规模（单用户 16KB 上限、几条到几十条偏好）压根没到需要向量检索的量级——全量注入 2000 token 完全够用。为一个还没出现的问题引入 Qdrant + Neo4j，是过度工程。</li>
+<li><strong>基建路线直接冲突</strong>。ark-agentic 的核心卖点之一是轻量、易部署、三方言 SQL 透明（SQLite/PG/MySQL）。引入向量库 + 图库会直接破坏这个卖点，下游（金融/保险场景）部署复杂度陡增。</li>
+<li><strong>benchmark 不构成压力</strong>。LOCOMO 上"纯 filesystem + grep"都能到约 74%，重基建没换来实质领先。我们没有"性能落后所以必须上向量"的硬理由。</li>
+<li><strong>团队规模</strong>。维护向量库 + 图库 + embedding pipeline 是持续运维负担，对小团队是净负债。</li>
+</ol>
+
+<h2>2 · 但有两点我们确实该学（别嘴硬）</h2>
+<ol>
+<li><strong>per-agent 记忆差异化</strong>。MemOS 的可组合记忆单元天然支持不同场景用不同记忆配置。我们的抽取规则以前是全局共享——这是真缺口。（注：这一块我们已经在做/做完了 per-agent rules，可以在汇报时作为"已吸收 MemOS 思路"的例证。）</li>
+<li><strong>记忆的"演化"视角</strong>。MemOS 强调记忆随时间组合/迁移/融合。我们的周期整理已经在做合并，但可以更显式地建模"记忆的一生"（操作日志已经给了数据基础）。</li>
+</ol>
+
+<h2>3 · 汇报话术建议</h2>
+<p>如果老板追问"到底要不要上 MemOS / 你怎么看"，可以这么说——既肯定 MemOS、又给出有数据支撑的不适配理由，落到一个积极结论：</p>
+<blockquote>
+"MemOS 我研究了——它的记忆分层和记忆单元化思想很先进，我们已经在操作日志和周期整理机制里吸收了类似理念，最近还落地了记忆规则的 agent 级定制。它的向量+图混合检索适合海量记忆检索场景，但我们当前是轻量偏好记忆、全量注入就够，而且公开 benchmark 显示重基建在记忆问答上没有实质优势（纯文件方案都能打平）。所以我的结论是：借鉴它的概念框架来演进我们的设计，但不引入它的重基础设施——这样既跟上了前沿思路，又守住了我们轻量易部署的核心优势。"
+</blockquote>
+<div class="box">
+<p><strong>为什么这么说管用</strong>：① 肯定了 MemOS（顺老板的意）；② 展示你真研究了（有细节）；③ 给了有数据支撑的不适配理由（站得住，被追问不慌）；④ 落到"借鉴思想"的积极行动结论，而不是简单一句"不适合我们"。</p>
+</div>
+
+<h2>4 · 可能被追问的点 & 备好的回答</h2>
+<ul>
+<li><strong>"它 star 有 10k，很火啊？"</strong> → star 数反映关注度，不等于适配我们场景。而且它的完整部署要拉起向量库+图库两个重服务，我们下游要在客户内网部署，这个复杂度不划算。</li>
+<li><strong>"它 benchmark 领先那么多？"</strong> → 那些分数全是厂商自测、自家评测流程下跑的，各家自测互相打架（Mem0 自测比 MemOS 给它打的高很多）。而且纯文件方案都能到相近水平，说明重基建没换来实质领先。这条不能当客观证据。</li>
+<li><strong>"那我们是不是落后了？"</strong> → 不是。我们和 MemOS 只是定位不同——它做基础设施平台，我们做轻量子系统。该学的思想我们在吸收，不该背的基建负担我们没背。</li>
+</ul>
+
+<hr>
+<p><small>硬事实与完整对比见对外版 memos-研究报告.html。这份内部备注不要外传。</small></p>
+
+</div>
+</body>
+</html>
